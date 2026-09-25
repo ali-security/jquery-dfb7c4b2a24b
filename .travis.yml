@@ -1,3 +1,11 @@
 language: node_js
 node_js:
 - '0.10'
+addons:
+  apt:
+    packages:
+    - php-cli
+  chrome: stable
+script:
+- npm test
+- bash test/ci/run-browser-tests.sh

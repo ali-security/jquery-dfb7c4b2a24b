@@ -1,0 +1,93 @@
+name: pack
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pack:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      TZ: UTC
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 0.10.48
+
+      - name: Install faketime
+        run: sudo apt-get update && sudo apt-get install -y faketime
+
+      - name: Pin npm registry to the release date
+        # Time-machine registry pinned at the 1.11.1 release date so uglify-js etc.
+        # resolve to their 2014 versions and dist/jquery.min.js is byte-identical.
+        run: npm config set registry "https://:2014-05-01T18%3A05%3A32.863Z@time-machines-npm.sealsecurity.io/"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build dist at the release timestamp
+        # The build stamps @DATE into dist/jquery.js and the current year into the min.js banner
+        run: faketime '2014-05-01 17:42:00' ./node_modules/.bin/grunt 'build:*:*' uglify
+
+      - name: Create dist/cdn copies (mirrors makeReleaseCopies in build/release.js)
+        run: |
+          node <<'EOF'
+          var fs = require( "fs" ),
+            version = JSON.parse( fs.readFileSync( "package.json", "utf8" ) ).version,
+            devFile = "dist/jquery.js",
+            minFile = "dist/jquery.min.js",
+            mapFile = "dist/jquery.min.map",
+            cdnFolder = "dist/cdn",
+            releaseFiles = {
+              "jquery-VER.js": devFile,
+              "jquery-VER.min.js": minFile,
+              "jquery-VER.min.map": mapFile,
+              "jquery.js": devFile,
+              "jquery.min.js": minFile,
+              "jquery.min.map": mapFile,
+              "jquery-latest.js": devFile,
+              "jquery-latest.min.js": minFile,
+              "jquery-latest.min.map": mapFile
+            };
+
+          if ( !fs.existsSync( cdnFolder ) ) {
+            fs.mkdirSync( cdnFolder );
+          }
+
+          Object.keys( releaseFiles ).forEach(function( key ) {
+            var text,
+              builtFile = releaseFiles[ key ],
+              unpathedFile = key.replace( /VER/g, version ),
+              releaseFile = cdnFolder + "/" + unpathedFile;
+
+            if ( /\.map$/.test( releaseFile ) ) {
+              text = fs.readFileSync( builtFile, "utf8" )
+                .replace( /"file":"([^"]+)","sources":\["([^"]+)"\]/,
+                  "\"file\":\"" + unpathedFile.replace( /\.min\.map/, ".min.js" ) +
+                  "\",\"sources\":[\"" + unpathedFile.replace( /\.min\.map/, ".js" ) + "\"]" );
+            } else if ( /\.min\.js$/.test( releaseFile ) ) {
+              text = fs.readFileSync( builtFile, "utf8" )
+                .replace( /\/\/# sourceMappingURL=\S+/, "" );
+            } else {
+              // Plain copy, like shell.cp
+              text = fs.readFileSync( builtFile );
+            }
+            fs.writeFileSync( releaseFile, text );
+            console.log( "Wrote " + releaseFile );
+          });
+          EOF
+          ls -l dist dist/cdn
+
+      - name: Pack
+        # .github/ exists only on the build fork; keep it out of the tarball like the upstream publish
+        run: |
+          rm -rf .github
+          npm pack
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jquery-tgz
+          path: jquery-*.tgz
+          if-no-files-found: error
